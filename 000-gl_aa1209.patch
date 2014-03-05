@@ -1,0 +1,243 @@
+--- a/target/linux/ar71xx/base-files/etc/uci-defaults/network
++++ b/target/linux/ar71xx/base-files/etc/uci-defaults/network
+@@ -163,6 +163,10 @@ wp543)
+ 	ucidef_set_interface_lan "eth0"
+ 	;;
+ 
++gl-inet)
++	ucidef_set_interfaces_lan_wan "eth1" "eth0"
++	;;
++
+ alfa-ap96 |\
+ alfa-nx |\
+ ap83 |\
+--- a/target/linux/ar71xx/base-files/lib/ar71xx.sh
++++ b/target/linux/ar71xx/base-files/lib/ar71xx.sh
+@@ -147,6 +147,9 @@ ar71xx_board_detect() {
+ 	machine=$(awk 'BEGIN{FS="[ \t]+:[ \t]"} /machine/ {print $2}' /proc/cpuinfo)
+ 
+ 	case "$machine" in
++	*"GL-CONNECT INET v1")
++		name="gl-inet"
++		;;
+ 	*"AirRouter")
+ 		name="airrouter"
+ 		;;
+--- a/target/linux/ar71xx/base-files/lib/upgrade/platform.sh
++++ b/target/linux/ar71xx/base-files/lib/upgrade/platform.sh
+@@ -157,6 +157,7 @@ platform_check_image() {
+ 	tl-wa901nd-v2 | \
+ 	tl-wdr4300 | \
+ 	tl-wr703n | \
++	gl-inet | \
+ 	tl-wr741nd | \
+ 	tl-wr741nd-v4 | \
+ 	tl-wr841n-v1 | \
+--- a/target/linux/ar71xx/config-3.3
++++ b/target/linux/ar71xx/config-3.3
+@@ -65,6 +65,7 @@ CONFIG_ATH79_MACH_TL_WR1041N_V2=y
+ CONFIG_ATH79_MACH_TL_WR1043ND=y
+ CONFIG_ATH79_MACH_TL_WR2543N=y
+ CONFIG_ATH79_MACH_TL_WR703N=y
++CONFIG_ATH79_MACH_GL_INET=y
+ CONFIG_ATH79_MACH_TL_WR741ND=y
+ CONFIG_ATH79_MACH_TL_WR741ND_V4=y
+ CONFIG_ATH79_MACH_TL_WR841N_V1=y
+--- /dev/null
++++ b/target/linux/ar71xx/files/arch/mips/ath79/mach-gl-inet.c
+@@ -0,0 +1,100 @@
++/*
++ *  GL-CONNECT iNet board support
++ *
++ *  Copyright (C) 2011 dongyuqi <729650915@qq.com>
++ *  Copyright (C) 2011-2012 Gabor Juhos <juhosg@openwrt.org>
++ *  Copyright (C) 2013 alzhao <alzhao@gmail.com>
++ *
++ *  This program is free software; you can redistribute it and/or modify it
++ *  under the terms of the GNU General Public License version 2 as published
++ *  by the Free Software Foundation.
++ */
++
++#include <linux/gpio.h>
++
++#include <asm/mach-ath79/ath79.h>
++
++#include "dev-eth.h"
++#include "dev-gpio-buttons.h"
++#include "dev-leds-gpio.h"
++#include "dev-m25p80.h"
++#include "dev-usb.h"
++#include "dev-wmac.h"
++#include "machtypes.h"
++
++#define GL_INET_GPIO_LED_WLAN	0
++#define GL_INET_GPIO_LED_LAN	13
++#define GL_INET_GPIO_BTN_RESET	11
++
++#define GL_INET_KEYS_POLL_INTERVAL	20	/* msecs */
++#define GL_INET_KEYS_DEBOUNCE_INTERVAL	(3 * GL_INET_KEYS_POLL_INTERVAL)
++
++static const char *gl_inet_part_probes[] = {
++		"tp-link", //dont change, this will use tplink parser
++		NULL ,
++};
++
++static struct flash_platform_data gl_inet_flash_data = {
++		.part_probes = gl_inet_part_probes,
++};
++
++static struct gpio_led gl_inet_leds_gpio[] __initdata = {
++		{
++				.name = "gl-connect:red:wireless",
++				.gpio = GL_INET_GPIO_LED_WLAN,
++				.active_low = 0,
++		},
++};
++
++static struct gpio_keys_button gl_inet_gpio_keys[] __initdata = {
++		{
++				.desc = "reset",
++				.type = EV_KEY,
++				.code = KEY_RESTART,
++				.debounce_interval = GL_INET_KEYS_DEBOUNCE_INTERVAL,
++				.gpio = GL_INET_GPIO_BTN_RESET,
++				.active_low = 0,
++		}
++};
++
++static void __init gl_inet_setup(void) {
++
++	/* get the mac address which is stored in the 1st 64k uboot MTD */
++	u8 *mac = (u8 *) KSEG1ADDR(0x1f01fc00);
++	/* get the art address, which is the last 64k. by usng 0x1fff1000, it doesn't matter it is 4M, 8M or 16M flash */
++	u8 *ee = (u8 *) KSEG1ADDR(0x1fff1000);
++
++	//Todo: what is this
++	/* disable PHY_SWAP and PHY_ADDR_SWAP bits */
++	ath79_setup_ar933x_phy4_switch(false, false);
++
++	/* register flash. MTD will use tp-link parser to parser MTD*/
++	ath79_register_m25p80(&gl_inet_flash_data);
++
++	/* register gpio LED and Key */
++	ath79_register_leds_gpio(-1, ARRAY_SIZE(gl_inet_leds_gpio), gl_inet_leds_gpio);
++
++	ath79_register_gpio_keys_polled(-1, GL_INET_KEYS_POLL_INTERVAL, ARRAY_SIZE(gl_inet_gpio_keys),
++			gl_inet_gpio_keys);
++
++	/* enable usb */
++	ath79_register_usb();
++
++	/* register eth0 as WAN, eth1 as LAN */
++	ath79_init_mac(ath79_eth0_data.mac_addr, mac, 0);
++
++	ath79_register_mdio(0, 0x0);
++	ath79_register_eth(0);
++	ath79_init_mac(ath79_eth1_data.mac_addr, mac, 1);
++	ath79_register_eth(1);
++
++	/* register wireless mac with cal data*/
++	ath79_register_wmac(ee, mac);
++
++}
++/* Important:
++ * $1: machtype, is used to identify profiles
++ * $2: machine id
++ * The init scripts will use the "Name" to detect which board, be sure to modify the scripts
++ */
++MIPS_MACHINE(ATH79_MACH_GL_INET, "GL-INET", "GL-CONNECT INET v1", gl_inet_setup);
+--- /dev/null
++++ b/target/linux/ar71xx/generic/profiles/gl-connect.mk
+@@ -0,0 +1,16 @@
++#
++# Copyright (C) 2009 OpenWrt.org
++#
++# This is free software, licensed under the GNU General Public License v2.
++# See /LICENSE for more information.
++#
++
++define Profile/GLINET
++	NAME:=GL INET
++	PACKAGES:=kmod-usb-core kmod-usb2
++endef
++
++define Profile/GLINET/Description
++	Package set optimized for the GL INET LITE 001.
++endef
++$(eval $(call Profile,GLINET))
+--- a/target/linux/ar71xx/image/Makefile
++++ b/target/linux/ar71xx/image/Makefile
+@@ -884,7 +884,7 @@ $(eval $(call SingleProfile,TPLINK-LZMA,
+ $(eval $(call SingleProfile,TPLINK-LZMA,$(fs_64kraw),TLWDR3600V1,tl-wdr3600-v1,TL-WDR4300,ttyS0,115200,0x36000001,1,8Mlzma))
+ $(eval $(call SingleProfile,TPLINK-LZMA,$(fs_64kraw),TLWDR4300V1,tl-wdr4300-v1,TL-WDR4300,ttyS0,115200,0x43000001,1,8Mlzma))
+ $(eval $(call SingleProfile,TPLINK-LZMA,$(fs_64kraw),TLWDR4310V1,tl-wdr4310-v1,TL-WDR4300,ttyS0,115200,0x43100001,1,8Mlzma))
+-
++$(eval $(call SingleProfile,TPLINK-LZMA,$(fs_64kraw),GLINET,gl-inet-v1,GL-INET,ttyATH0,115200,0x08000001,1,8Mlzma))
+ $(eval $(call SingleProfile,UBDEV,$(fs_64k),UBDEV01,ubdev01,UBNT-UF,ttyS0,115200,XM,XM,ar7240))
+ 
+ $(eval $(call SingleProfile,UBNT,$(fs_64k),UBNTRS,ubnt-rs,UBNT-RS,ttyS0,115200,RS,RSx,ar7100))
+--- a/tools/firmware-utils/src/mktplinkfw.c
++++ b/tools/firmware-utils/src/mktplinkfw.c
+@@ -52,7 +52,7 @@
+ #define HWID_TL_WR1043ND_V1	0x10430001
+ #define HWID_TL_WR1041N_V2	0x10410002
+ #define HWID_TL_WR2543N_V1	0x25430001
+-
++#define HWID_GL_INET_V1		0x08000001
+ #define MD5SUM_LEN	16
+ 
+ struct file_info {
+@@ -289,6 +289,11 @@ static struct board_info boards[] = {
+ 		.hw_rev		= 1,
+ 		.layout_id	= "4Mlzma",
+ 	}, {
++		.id		= "GL-INETv1",
++		.hw_id		= HWID_GL_INET_V1,
++		.hw_rev		= 1,
++		.layout_id	= "8Mlzma",
++	}, {
+ 		/* terminating entry */
+ 	}
+ };
+--- /dev/null
++++ b/target/linux/ar71xx/patches-3.3/911-mips-ath79-machine.patch
+@@ -0,0 +1,39 @@
++--- a/arch/mips/ath79/Kconfig
+++++ b/arch/mips/ath79/Kconfig
++@@ -500,6 +500,16 @@ config ATH79_MACH_TL_WR703N
++ 	select ATH79_DEV_USB
++ 	select ATH79_DEV_WMAC
++ 
+++config ATH79_MACH_GL_INET
+++	bool "GL-CONNECT GL-INET support"
+++	select SOC_AR933X
+++	select ATH79_DEV_ETH
+++	select ATH79_DEV_GPIO_BUTTONS
+++	select ATH79_DEV_LEDS_GPIO
+++	select ATH79_DEV_M25P80
+++	select ATH79_DEV_USB
+++	select ATH79_DEV_WMAC
+++
++ config ATH79_MACH_TL_WR741ND
++ 	bool "TP-LINK TL-WR741ND support"
++ 	select SOC_AR724X
++--- a/arch/mips/ath79/Makefile
+++++ b/arch/mips/ath79/Makefile
++@@ -89,6 +89,7 @@ obj-$(CONFIG_ATH79_MACH_TL_WR1041N_V2)	+
++ obj-$(CONFIG_ATH79_MACH_TL_WR1043ND)	+= mach-tl-wr1043nd.o
++ obj-$(CONFIG_ATH79_MACH_TL_WR2543N)	+= mach-tl-wr2543n.o
++ obj-$(CONFIG_ATH79_MACH_TL_WR703N)	+= mach-tl-wr703n.o
+++obj-$(CONFIG_ATH79_MACH_GL_INET)	+= mach-gl-inet.o
++ obj-$(CONFIG_ATH79_MACH_UBNT)		+= mach-ubnt.o
++ obj-$(CONFIG_ATH79_MACH_UBNT_XM)	+= mach-ubnt-xm.o
++ obj-$(CONFIG_ATH79_MACH_WHR_HP_G300N)	+= mach-whr-hp-g300n.o
++--- a/arch/mips/ath79/machtypes.h
+++++ b/arch/mips/ath79/machtypes.h
++@@ -84,6 +84,7 @@ enum ath79_mach_type {
++ 	ATH79_MACH_TL_WR1043ND,		/* TP-LINK TL-WR1043ND */
++ 	ATH79_MACH_TL_WR2543N,		/* TP-LINK TL-WR2543N/ND */
++ 	ATH79_MACH_TL_WR703N,		/* TP-LINK TL-WR703N */
+++	ATH79_MACH_GL_INET,		/* GL-CONNECT GL-INET */
++ 	ATH79_MACH_TL_WR741ND,		/* TP-LINK TL-WR741ND */
++ 	ATH79_MACH_TL_WR741ND_V4,	/* TP-LINK TL-WR741ND  v4*/
++ 	ATH79_MACH_TL_WR841N_V1,	/* TP-LINK TL-WR841N v1 */
